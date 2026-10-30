@@ -106,3 +106,41 @@ void UsageFault_Handler(void)
 void DebugMon_Handler(void)
 {
 }
+
+/*!
+    \brief      this function handles the USART0 idle interrupt
+    \param[in]  none
+    \param[out] none
+    \retval     none
+*/
+void USART0_IRQHandler(void)
+{
+    if(RESET != usart_interrupt_flag_get(USART0, USART_INT_FLAG_IDLE)){
+        /* Reading STAT0 followed by DATA clears the IDLE flag. */
+        (void)USART_STAT0(USART0);
+        (void)USART_DATA(USART0);
+
+        dma_channel_disable(DMA0, DMA_CH4);
+        usart0_rx_length = (uint16_t)(USART0_RX_BUFFER_SIZE
+                           - dma_transfer_number_get(DMA0, DMA_CH4));
+        usart0_rx_ready = (usart0_rx_length > 0U);
+
+        dma_transfer_number_config(DMA0, DMA_CH4, USART0_RX_BUFFER_SIZE);
+        dma_channel_enable(DMA0, DMA_CH4);
+    }
+}
+
+/*!
+    \brief      this function handles the USART0 transmit DMA interrupt
+    \param[in]  none
+    \param[out] none
+    \retval     none
+*/
+void DMA0_Channel3_IRQHandler(void)
+{
+    if(RESET != dma_interrupt_flag_get(DMA0, DMA_CH3, DMA_INT_FLAG_FTF)){
+        dma_interrupt_flag_clear(DMA0, DMA_CH3, DMA_INT_FLAG_G);
+        dma_channel_disable(DMA0, DMA_CH3);
+        usart0_tx_busy = false;
+    }
+}

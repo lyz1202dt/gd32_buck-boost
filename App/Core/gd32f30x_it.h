@@ -56,5 +56,9 @@ void DebugMon_Handler(void);
 void PendSV_Handler(void);
 /* this function handles SysTick exception */
 void SysTick_Handler(void);
+/* this function handles the USART0 receive interrupt */
+void USART0_IRQHandler(void);
+/* this function handles the USART0 transmit DMA interrupt */
+void DMA0_Channel3_IRQHandler(void);
 
 #endif /* GD32F30X_IT_H */
