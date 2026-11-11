@@ -20,7 +20,7 @@ target_include_directories(App PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/Task"
 )
 
-target_link_libraries(App PRIVATE Firmware freertos_kernel)
+target_link_libraries(App PRIVATE Firmware freertos_kernel oled_driver)
 
 target_link_options(App PRIVATE
     "-mcpu=cortex-m4"
