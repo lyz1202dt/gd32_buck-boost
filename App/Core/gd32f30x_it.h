@@ -58,6 +58,7 @@ void PendSV_Handler(void);
 void SysTick_Handler(void);
 /* this function handles the USART0 receive interrupt */
 void USART0_IRQHandler(void);
+void DMA0_Channel4_IRQHandler(void);
 /* this function handles the USART0 transmit DMA interrupt */
 void DMA0_Channel3_IRQHandler(void);
 

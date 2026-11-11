@@ -20,6 +20,8 @@ set(FREERTOS_PORT GCC_ARM_CM4F CACHE STRING "")
 set(FREERTOS_HEAP 4 CACHE STRING "")
 
 add_subdirectory(third_party/FreeRTOS-Kernel)
+add_subdirectory(Lib/i2c)
+add_subdirectory(Lib/usart)
 add_subdirectory(third_party/HAL_I2C_0.96_OLED_Driver)
 
 add_subdirectory(App)

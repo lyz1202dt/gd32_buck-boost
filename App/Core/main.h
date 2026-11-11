@@ -35,16 +35,4 @@ OF SUCH DAMAGE.
 #ifndef MAIN_H
 #define MAIN_H
 
-#include <stdbool.h>
-#include <stdint.h>
-
-#define USART0_RX_BUFFER_SIZE 256U
-
-extern uint8_t usart0_rx_buffer[USART0_RX_BUFFER_SIZE];
-extern volatile uint16_t usart0_rx_length;
-extern volatile bool usart0_rx_ready;
-extern volatile bool usart0_tx_busy;
-
-bool usart0_dma_transmit(const uint8_t* data, uint16_t length);
-
 #endif /* MAIN_H */
