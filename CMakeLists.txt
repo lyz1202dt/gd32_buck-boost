@@ -4,7 +4,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(cmake/arm-none-eabi.cmake)
 
-project(gd32_proj LANGUAGES C CXX ASM)
+project(gd32_proj LANGUAGES C ASM)
 
 #add_subdirectory(bootloader)
 

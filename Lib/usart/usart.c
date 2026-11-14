@@ -2,268 +2,374 @@
 
 #include <string.h>
 
-#include "gd32f30x_dma.h"
-#include "gd32f30x_gpio.h"
 #include "gd32f30x_rcu.h"
-#include "gd32f30x_usart.h"
-#include "semphr.h"
-#include "stream_buffer.h"
+#include "task.h"
 
-#define USART_DMA_BUFFER_SIZE 256U
-#define USART_IRQ_PRIORITY 5U
-
-struct usart_handle {
-    usart_port_t port;
-    StreamBufferHandle_t rx_stream;
-    SemaphoreHandle_t tx_mutex;
-    SemaphoreHandle_t tx_complete;
-    volatile uint32_t dropped_bytes;
-    uint8_t rx_dma_buffer[USART_DMA_BUFFER_SIZE];
-    uint8_t tx_dma_buffer[USART_DMA_BUFFER_SIZE];
-};
-
-static usart_handle_t * volatile active_handle;
-
-static void usart_release_handle(usart_handle_t *handle)
+static bool usart_is_valid_instance(uint32_t instance)
 {
-    if (handle->tx_complete != NULL) {
-        vSemaphoreDelete(handle->tx_complete);
-    }
-    if (handle->tx_mutex != NULL) {
-        vSemaphoreDelete(handle->tx_mutex);
-    }
-    if (handle->rx_stream != NULL) {
-        vStreamBufferDelete(handle->rx_stream);
-    }
-    vPortFree(handle);
+    return (instance == USART0) || (instance == USART1) || (instance == USART2) ||
+           (instance == UART3) || (instance == UART4);
 }
 
-static void usart_rx_drain(usart_handle_t *handle)
+static bool usart_is_in_interrupt(void)
 {
-    size_t length;
-    BaseType_t higher_priority_task_woken = pdFALSE;
-
-    dma_channel_disable(DMA0, DMA_CH4);
-    length = USART_DMA_BUFFER_SIZE - dma_transfer_number_get(DMA0, DMA_CH4);
-    if (length != 0U) {
-        size_t written = xStreamBufferSendFromISR(handle->rx_stream, handle->rx_dma_buffer,
-                                                    length, &higher_priority_task_woken);
-        handle->dropped_bytes += (uint32_t)(length - written);
-    }
-    dma_interrupt_flag_clear(DMA0, DMA_CH4, DMA_INT_FLAG_G);
-    dma_transfer_number_config(DMA0, DMA_CH4, USART_DMA_BUFFER_SIZE);
-    dma_channel_enable(DMA0, DMA_CH4);
-    portYIELD_FROM_ISR(higher_priority_task_woken);
+    return __get_IPSR() != 0U;
 }
 
-bool usart_driver_install(usart_port_t port, const usart_config_t *config,
-                          size_t rx_buffer_size, usart_handle_t **out_handle)
+static void usart_enable_clock(uint32_t instance)
 {
-    dma_parameter_struct dma_init_struct;
-    usart_handle_t *handle;
-
-    if (out_handle == NULL) {
-        return false;
+    switch (instance) {
+    case USART0:
+        rcu_periph_clock_enable(RCU_USART0);
+        break;
+    case USART1:
+        rcu_periph_clock_enable(RCU_USART1);
+        break;
+    case USART2:
+        rcu_periph_clock_enable(RCU_USART2);
+        break;
+    case UART3:
+        rcu_periph_clock_enable(RCU_UART3);
+        break;
+    case UART4:
+        rcu_periph_clock_enable(RCU_UART4);
+        break;
+    default:
+        break;
     }
-    *out_handle = NULL;
-    if ((port != USART_PORT_0) || (active_handle != NULL) || (config == NULL) ||
+}
+
+static void usart_drain_semaphore(SemaphoreHandle_t semaphore)
+{
+    while (xSemaphoreTake(semaphore, 0U) == pdTRUE) {
+    }
+}
+
+static void usart_disable_transfer_interrupts(usart_handle_t *handle)
+{
+    usart_interrupt_disable(handle->instance, USART_INT_TBE);
+    usart_interrupt_disable(handle->instance, USART_INT_TC);
+    usart_interrupt_disable(handle->instance, USART_INT_RBNE);
+}
+
+static void usart_clear_error_flags(usart_handle_t *handle, uint32_t stat0)
+{
+    /* Reading STAT0 followed by DATA clears the GD32 error/RBNE condition. */
+    (void)stat0;
+    (void)USART_STAT0(handle->instance);
+    (void)usart_data_receive(handle->instance);
+}
+
+static void usart_finish_tx_from_isr(usart_handle_t *handle, usart_status_t status,
+                                     BaseType_t *higher_priority_task_woken)
+{
+    if (!handle->tx_active) {
+        return;
+    }
+
+    usart_interrupt_disable(handle->instance, USART_INT_TBE);
+    usart_interrupt_disable(handle->instance, USART_INT_TC);
+    handle->tx_status = status;
+    handle->tx_active = false;
+    (void)xSemaphoreGiveFromISR(handle->tx_complete, higher_priority_task_woken);
+}
+
+static void usart_finish_rx_from_isr(usart_handle_t *handle, usart_status_t status,
+                                     BaseType_t *higher_priority_task_woken)
+{
+    if (!handle->rx_active) {
+        return;
+    }
+
+    usart_interrupt_disable(handle->instance, USART_INT_RBNE);
+    handle->rx_status = status;
+    handle->rx_active = false;
+    (void)xSemaphoreGiveFromISR(handle->rx_complete, higher_priority_task_woken);
+}
+
+usart_status_t usart_init(usart_handle_t *handle, const usart_config_t *config)
+{
+    if ((handle == NULL) || (config == NULL) || !usart_is_valid_instance(config->instance) ||
         (config->baud_rate == 0U) || (config->data_bits != 8U) ||
         ((config->parity != USART_PARITY_NONE) && (config->parity != USART_PARITY_EVEN) &&
          (config->parity != USART_PARITY_ODD)) ||
         ((config->stop_bits != USART_STOP_BITS_1) &&
-         (config->stop_bits != USART_STOP_BITS_2)) ||
-        (rx_buffer_size < USART_DMA_BUFFER_SIZE)) {
-        return false;
+         (config->stop_bits != USART_STOP_BITS_2))) {
+        return USART_STATUS_INVALID_ARGUMENT;
+    }
+    if (usart_is_in_interrupt()) {
+        return USART_STATUS_INVALID_CONTEXT;
+    }
+    if (handle->initialized) {
+        return USART_STATUS_BUSY;
     }
 
-    handle = pvPortMalloc(sizeof(*handle));
-    if (handle == NULL) {
-        return false;
-    }
-    memset(handle, 0, sizeof(*handle));
-    handle->port = port;
-    handle->rx_stream = xStreamBufferCreate(rx_buffer_size, 1U);
+    /* A zero-initialized handle is the HAL-style reset state. */
+    handle->instance = config->instance;
+    handle->init = *config;
     handle->tx_mutex = xSemaphoreCreateMutex();
+    handle->rx_mutex = xSemaphoreCreateMutex();
     handle->tx_complete = xSemaphoreCreateBinary();
-    if ((handle->rx_stream == NULL) || (handle->tx_mutex == NULL) ||
-        (handle->tx_complete == NULL)) {
-        usart_release_handle(handle);
-        return false;
+    handle->rx_complete = xSemaphoreCreateBinary();
+    if ((handle->tx_mutex == NULL) || (handle->rx_mutex == NULL) ||
+        (handle->tx_complete == NULL) || (handle->rx_complete == NULL)) {
+        if (handle->tx_complete != NULL) {
+            vSemaphoreDelete(handle->tx_complete);
+        }
+        if (handle->rx_complete != NULL) {
+            vSemaphoreDelete(handle->rx_complete);
+        }
+        if (handle->tx_mutex != NULL) {
+            vSemaphoreDelete(handle->tx_mutex);
+        }
+        if (handle->rx_mutex != NULL) {
+            vSemaphoreDelete(handle->rx_mutex);
+        }
+        handle->tx_complete = NULL;
+        handle->rx_complete = NULL;
+        handle->tx_mutex = NULL;
+        handle->rx_mutex = NULL;
+        return USART_STATUS_ERROR;
     }
 
-    rcu_periph_clock_enable(RCU_AF);
-    rcu_periph_clock_enable(RCU_GPIOB);
-    rcu_periph_clock_enable(RCU_USART0);
-    rcu_periph_clock_enable(RCU_DMA0);
-    gpio_init(GPIOB, GPIO_MODE_AF_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_6);
-    gpio_init(GPIOB, GPIO_MODE_IN_FLOATING, GPIO_OSPEED_50MHZ, GPIO_PIN_7);
-    gpio_pin_remap_config(GPIO_USART0_REMAP, ENABLE);
+    handle->tx_buffer = NULL;
+    handle->tx_size = 0U;
+    handle->tx_count = 0U;
+    handle->tx_active = false;
+    handle->tx_status = USART_STATUS_OK;
+    handle->rx_buffer = NULL;
+    handle->rx_size = 0U;
+    handle->rx_count = 0U;
+    handle->rx_active = false;
+    handle->rx_status = USART_STATUS_OK;
+    handle->error_code = 0U;
 
-    usart_deinit(USART0);
-    usart_baudrate_set(USART0, config->baud_rate);
-    usart_word_length_set(USART0, (config->parity == USART_PARITY_NONE) ?
-                                      USART_WL_8BIT : USART_WL_9BIT);
-    usart_stop_bit_set(USART0, (config->stop_bits == USART_STOP_BITS_1) ?
-                                  USART_STB_1BIT : USART_STB_2BIT);
+    usart_enable_clock(handle->instance);
+    usart_deinit(handle->instance);
+    usart_baudrate_set(handle->instance, config->baud_rate);
+    usart_word_length_set(handle->instance,
+                          config->parity == USART_PARITY_NONE ? USART_WL_8BIT : USART_WL_9BIT);
+    usart_stop_bit_set(handle->instance,
+                       config->stop_bits == USART_STOP_BITS_1 ? USART_STB_1BIT : USART_STB_2BIT);
     if (config->parity == USART_PARITY_EVEN) {
-        usart_parity_config(USART0, USART_PM_EVEN);
+        usart_parity_config(handle->instance, USART_PM_EVEN);
     } else if (config->parity == USART_PARITY_ODD) {
-        usart_parity_config(USART0, USART_PM_ODD);
+        usart_parity_config(handle->instance, USART_PM_ODD);
     } else {
-        usart_parity_config(USART0, USART_PM_NONE);
+        usart_parity_config(handle->instance, USART_PM_NONE);
     }
-    usart_receive_config(USART0, USART_RECEIVE_ENABLE);
-    usart_transmit_config(USART0, USART_TRANSMIT_ENABLE);
-    usart_enable(USART0);
+    usart_receive_config(handle->instance, USART_RECEIVE_ENABLE);
+    usart_transmit_config(handle->instance, USART_TRANSMIT_ENABLE);
+    usart_enable(handle->instance);
 
-    dma_deinit(DMA0, DMA_CH4);
-    dma_struct_para_init(&dma_init_struct);
-    dma_init_struct.direction = DMA_PERIPHERAL_TO_MEMORY;
-    dma_init_struct.memory_addr = (uint32_t)handle->rx_dma_buffer;
-    dma_init_struct.memory_inc = DMA_MEMORY_INCREASE_ENABLE;
-    dma_init_struct.memory_width = DMA_MEMORY_WIDTH_8BIT;
-    dma_init_struct.number = USART_DMA_BUFFER_SIZE;
-    dma_init_struct.periph_addr = (uint32_t)&USART_DATA(USART0);
-    dma_init_struct.periph_inc = DMA_PERIPH_INCREASE_DISABLE;
-    dma_init_struct.periph_width = DMA_PERIPHERAL_WIDTH_8BIT;
-    dma_init_struct.priority = DMA_PRIORITY_HIGH;
-    dma_init(DMA0, DMA_CH4, &dma_init_struct);
-    dma_circulation_disable(DMA0, DMA_CH4);
-    dma_memory_to_memory_disable(DMA0, DMA_CH4);
-    dma_interrupt_enable(DMA0, DMA_CH4, DMA_INT_FTF);
-
-    dma_deinit(DMA0, DMA_CH3);
-    dma_struct_para_init(&dma_init_struct);
-    dma_init_struct.direction = DMA_MEMORY_TO_PERIPHERAL;
-    dma_init_struct.memory_addr = (uint32_t)handle->tx_dma_buffer;
-    dma_init_struct.memory_inc = DMA_MEMORY_INCREASE_ENABLE;
-    dma_init_struct.memory_width = DMA_MEMORY_WIDTH_8BIT;
-    dma_init_struct.number = USART_DMA_BUFFER_SIZE;
-    dma_init_struct.periph_addr = (uint32_t)&USART_DATA(USART0);
-    dma_init_struct.periph_inc = DMA_PERIPH_INCREASE_DISABLE;
-    dma_init_struct.periph_width = DMA_PERIPHERAL_WIDTH_8BIT;
-    dma_init_struct.priority = DMA_PRIORITY_HIGH;
-    dma_init(DMA0, DMA_CH3, &dma_init_struct);
-    dma_circulation_disable(DMA0, DMA_CH3);
-    dma_memory_to_memory_disable(DMA0, DMA_CH3);
-    dma_interrupt_enable(DMA0, DMA_CH3, DMA_INT_FTF);
-
-    (void)USART_STAT0(USART0);
-    (void)USART_DATA(USART0);
-    dma_interrupt_flag_clear(DMA0, DMA_CH3, DMA_INT_FLAG_G);
-    dma_interrupt_flag_clear(DMA0, DMA_CH4, DMA_INT_FLAG_G);
-    active_handle = handle;
-    nvic_irq_enable(USART0_IRQn, USART_IRQ_PRIORITY, 0U);
-    nvic_irq_enable(DMA0_Channel3_IRQn, USART_IRQ_PRIORITY, 0U);
-    nvic_irq_enable(DMA0_Channel4_IRQn, USART_IRQ_PRIORITY, 0U);
-    usart_dma_receive_config(USART0, USART_RECEIVE_DMA_ENABLE);
-    usart_dma_transmit_config(USART0, USART_TRANSMIT_DMA_ENABLE);
-    usart_interrupt_enable(USART0, USART_INT_IDLE);
-    dma_channel_enable(DMA0, DMA_CH4);
-    *out_handle = handle;
-    return true;
+    /* Error interrupt is left enabled so an active task cannot wait forever. */
+    usart_interrupt_enable(handle->instance, USART_INT_ERR);
+    handle->initialized = true;
+    return USART_STATUS_OK;
 }
 
-void usart_driver_delete(usart_handle_t *handle)
+usart_status_t usart_handle_deinit(usart_handle_t *handle)
 {
-    if ((handle == NULL) || (handle != active_handle)) {
+    if ((handle == NULL) || !handle->initialized) {
+        return USART_STATUS_INVALID_ARGUMENT;
+    }
+    if (usart_is_in_interrupt()) {
+        return USART_STATUS_INVALID_CONTEXT;
+    }
+    if (xSemaphoreTake(handle->tx_mutex, 0U) != pdTRUE) {
+        return USART_STATUS_BUSY;
+    }
+    if (xSemaphoreTake(handle->rx_mutex, 0U) != pdTRUE) {
+        (void)xSemaphoreGive(handle->tx_mutex);
+        return USART_STATUS_BUSY;
+    }
+
+    taskENTER_CRITICAL();
+    usart_disable_transfer_interrupts(handle);
+    usart_interrupt_disable(handle->instance, USART_INT_ERR);
+    handle->tx_active = false;
+    handle->rx_active = false;
+    taskEXIT_CRITICAL();
+    usart_disable(handle->instance);
+
+    xSemaphoreGive(handle->tx_mutex);
+    xSemaphoreGive(handle->rx_mutex);
+    vSemaphoreDelete(handle->tx_complete);
+    vSemaphoreDelete(handle->rx_complete);
+    vSemaphoreDelete(handle->tx_mutex);
+    vSemaphoreDelete(handle->rx_mutex);
+    memset(handle, 0, sizeof(*handle));
+    return USART_STATUS_OK;
+}
+
+usart_status_t usart_transmit_it(usart_handle_t *handle, const uint8_t *data,
+                                 size_t length, TickType_t timeout)
+{
+    if ((handle == NULL) || (data == NULL) || (length == 0U)) {
+        return USART_STATUS_INVALID_ARGUMENT;
+    }
+    if (!handle->initialized) {
+        return USART_STATUS_NOT_READY;
+    }
+    if (usart_is_in_interrupt()) {
+        return USART_STATUS_INVALID_CONTEXT;
+    }
+    if (xSemaphoreTake(handle->tx_mutex, timeout) != pdTRUE) {
+        return USART_STATUS_TIMEOUT;
+    }
+
+    usart_drain_semaphore(handle->tx_complete);
+    taskENTER_CRITICAL();
+    handle->tx_buffer = data;
+    handle->tx_size = length;
+    handle->tx_count = 0U;
+    handle->tx_status = USART_STATUS_BUSY;
+    handle->tx_active = true;
+    usart_interrupt_disable(handle->instance, USART_INT_TC);
+    usart_interrupt_enable(handle->instance, USART_INT_TBE);
+    taskEXIT_CRITICAL();
+
+    if (xSemaphoreTake(handle->tx_complete, timeout) != pdTRUE) {
+        taskENTER_CRITICAL();
+        handle->tx_active = false;
+        handle->tx_status = USART_STATUS_TIMEOUT;
+        usart_interrupt_disable(handle->instance, USART_INT_TBE);
+        usart_interrupt_disable(handle->instance, USART_INT_TC);
+        taskEXIT_CRITICAL();
+        usart_drain_semaphore(handle->tx_complete);
+        xSemaphoreGive(handle->tx_mutex);
+        return USART_STATUS_TIMEOUT;
+    }
+
+    usart_status_t status = handle->tx_status;
+    xSemaphoreGive(handle->tx_mutex);
+    return status;
+}
+
+usart_status_t usart_receive_it(usart_handle_t *handle, uint8_t *data,
+                                size_t length, TickType_t timeout)
+{
+    if ((handle == NULL) || (data == NULL) || (length == 0U)) {
+        return USART_STATUS_INVALID_ARGUMENT;
+    }
+    if (!handle->initialized) {
+        return USART_STATUS_NOT_READY;
+    }
+    if (usart_is_in_interrupt()) {
+        return USART_STATUS_INVALID_CONTEXT;
+    }
+    if (xSemaphoreTake(handle->rx_mutex, timeout) != pdTRUE) {
+        return USART_STATUS_TIMEOUT;
+    }
+
+    usart_drain_semaphore(handle->rx_complete);
+    taskENTER_CRITICAL();
+    handle->rx_buffer = data;
+    handle->rx_size = length;
+    handle->rx_count = 0U;
+    handle->rx_status = USART_STATUS_BUSY;
+    handle->rx_active = true;
+    usart_interrupt_enable(handle->instance, USART_INT_RBNE);
+    taskEXIT_CRITICAL();
+
+    if (xSemaphoreTake(handle->rx_complete, timeout) != pdTRUE) {
+        taskENTER_CRITICAL();
+        handle->rx_active = false;
+        handle->rx_status = USART_STATUS_TIMEOUT;
+        usart_interrupt_disable(handle->instance, USART_INT_RBNE);
+        taskEXIT_CRITICAL();
+        usart_drain_semaphore(handle->rx_complete);
+        xSemaphoreGive(handle->rx_mutex);
+        return USART_STATUS_TIMEOUT;
+    }
+
+    usart_status_t status = handle->rx_status;
+    xSemaphoreGive(handle->rx_mutex);
+    return status;
+}
+
+usart_status_t usart_transmit(usart_handle_t *handle, const uint8_t *data,
+                              size_t length, TickType_t timeout)
+{
+    return usart_transmit_it(handle, data, length, timeout);
+}
+
+usart_status_t usart_receive(usart_handle_t *handle, uint8_t *data,
+                             size_t length, TickType_t timeout)
+{
+    return usart_receive_it(handle, data, length, timeout);
+}
+
+void usart_irq_handler(usart_handle_t *handle)
+{
+    BaseType_t higher_priority_task_woken = pdFALSE;
+    uint32_t stat0;
+
+    if ((handle == NULL) || !handle->initialized) {
         return;
     }
 
-    nvic_irq_disable(USART0_IRQn);
-    nvic_irq_disable(DMA0_Channel3_IRQn);
-    nvic_irq_disable(DMA0_Channel4_IRQn);
-    usart_interrupt_disable(USART0, USART_INT_IDLE);
-    usart_dma_receive_config(USART0, USART_RECEIVE_DMA_DISABLE);
-    usart_dma_transmit_config(USART0, USART_TRANSMIT_DMA_DISABLE);
-    dma_channel_disable(DMA0, DMA_CH3);
-    dma_channel_disable(DMA0, DMA_CH4);
-    dma_interrupt_flag_clear(DMA0, DMA_CH3, DMA_INT_FLAG_G);
-    dma_interrupt_flag_clear(DMA0, DMA_CH4, DMA_INT_FLAG_G);
-    usart_deinit(USART0);
-    active_handle = NULL;
-    usart_release_handle(handle);
+    stat0 = USART_STAT0(handle->instance);
+    if ((stat0 & (USART_STAT0_PERR | USART_STAT0_FERR | USART_STAT0_NERR |
+                  USART_STAT0_ORERR)) != 0U) {
+        handle->error_code = stat0 &
+                             (USART_STAT0_PERR | USART_STAT0_FERR | USART_STAT0_NERR |
+                              USART_STAT0_ORERR);
+        usart_clear_error_flags(handle, stat0);
+        usart_finish_tx_from_isr(handle, USART_STATUS_ERROR, &higher_priority_task_woken);
+        usart_finish_rx_from_isr(handle, USART_STATUS_ERROR, &higher_priority_task_woken);
+    }
+
+    if (handle->tx_active &&
+        (RESET != usart_interrupt_flag_get(handle->instance, USART_INT_FLAG_TBE))) {
+        if (handle->tx_count < handle->tx_size) {
+            usart_data_transmit(handle->instance, handle->tx_buffer[handle->tx_count]);
+            ++handle->tx_count;
+        }
+        if (handle->tx_count >= handle->tx_size) {
+            usart_interrupt_disable(handle->instance, USART_INT_TBE);
+            usart_interrupt_enable(handle->instance, USART_INT_TC);
+        }
+    }
+
+    if (handle->tx_active &&
+        (RESET != usart_interrupt_flag_get(handle->instance, USART_INT_FLAG_TC))) {
+        usart_finish_tx_from_isr(handle, USART_STATUS_OK, &higher_priority_task_woken);
+    }
+
+    if (handle->rx_active &&
+        (RESET != usart_interrupt_flag_get(handle->instance, USART_INT_FLAG_RBNE))) {
+        if (handle->rx_count < handle->rx_size) {
+            handle->rx_buffer[handle->rx_count] = (uint8_t)usart_data_receive(handle->instance);
+            ++handle->rx_count;
+        } else {
+            (void)usart_data_receive(handle->instance);
+        }
+        if (handle->rx_count >= handle->rx_size) {
+            usart_finish_rx_from_isr(handle, USART_STATUS_OK, &higher_priority_task_woken);
+        }
+    }
+
+    portYIELD_FROM_ISR(higher_priority_task_woken);
+}
+
+size_t usart_get_rx_count(const usart_handle_t *handle)
+{
+    return (handle == NULL) ? 0U : handle->rx_count;
+}
+
+uint32_t usart_get_error(const usart_handle_t *handle)
+{
+    return (handle == NULL) ? 0U : handle->error_code;
 }
 
 size_t usart_read_bytes(usart_handle_t *handle, uint8_t *data, size_t length,
                         TickType_t timeout)
 {
-    if ((handle == NULL) || (handle != active_handle) || (data == NULL) ||
-        (length == 0U)) {
-        return 0U;
-    }
-    return xStreamBufferReceive(handle->rx_stream, data, length, timeout);
+    return usart_receive_it(handle, data, length, timeout) == USART_STATUS_OK ? length : 0U;
 }
 
 size_t usart_write_bytes(usart_handle_t *handle, const uint8_t *data, size_t length)
 {
-    size_t written = 0U;
-
-    if ((handle == NULL) || (handle != active_handle) || (data == NULL) ||
-        (length == 0U)) {
-        return 0U;
-    }
-    xSemaphoreTake(handle->tx_mutex, portMAX_DELAY);
-    while (written < length) {
-        size_t chunk = length - written;
-        if (chunk > USART_DMA_BUFFER_SIZE) {
-            chunk = USART_DMA_BUFFER_SIZE;
-        }
-        memcpy(handle->tx_dma_buffer, data + written, chunk);
-        dma_channel_disable(DMA0, DMA_CH3);
-        dma_interrupt_flag_clear(DMA0, DMA_CH3, DMA_INT_FLAG_G);
-        dma_transfer_number_config(DMA0, DMA_CH3, (uint32_t)chunk);
-        dma_channel_enable(DMA0, DMA_CH3);
-        xSemaphoreTake(handle->tx_complete, portMAX_DELAY);
-        written += chunk;
-    }
-    xSemaphoreGive(handle->tx_mutex);
-    return written;
-}
-
-bool usart_get_buffered_data_len(usart_handle_t *handle, size_t *length)
-{
-    if ((handle == NULL) || (handle != active_handle) || (length == NULL)) {
-        return false;
-    }
-    *length = xStreamBufferBytesAvailable(handle->rx_stream);
-    return true;
-}
-
-uint32_t usart_get_dropped_bytes(usart_handle_t *handle)
-{
-    return ((handle == NULL) || (handle != active_handle)) ? 0U :
-           handle->dropped_bytes;
-}
-
-void usart_rx_idle_irq(void)
-{
-    if (RESET != usart_interrupt_flag_get(USART0, USART_INT_FLAG_IDLE)) {
-        (void)USART_STAT0(USART0);
-        (void)USART_DATA(USART0);
-        if (active_handle != NULL) {
-            usart_rx_drain(active_handle);
-        }
-    }
-}
-
-void usart_rx_dma_irq(void)
-{
-    if ((active_handle != NULL) &&
-        (RESET != dma_interrupt_flag_get(DMA0, DMA_CH4, DMA_INT_FLAG_FTF))) {
-        usart_rx_drain(active_handle);
-    }
-}
-
-void usart_tx_dma_irq(void)
-{
-    if ((active_handle != NULL) &&
-        (RESET != dma_interrupt_flag_get(DMA0, DMA_CH3, DMA_INT_FLAG_FTF))) {
-        BaseType_t higher_priority_task_woken = pdFALSE;
-
-        dma_interrupt_flag_clear(DMA0, DMA_CH3, DMA_INT_FLAG_G);
-        dma_channel_disable(DMA0, DMA_CH3);
-        xSemaphoreGiveFromISR(active_handle->tx_complete, &higher_priority_task_woken);
-        portYIELD_FROM_ISR(higher_priority_task_woken);
-    }
+    return usart_transmit_it(handle, data, length, portMAX_DELAY) == USART_STATUS_OK ? length : 0U;
 }

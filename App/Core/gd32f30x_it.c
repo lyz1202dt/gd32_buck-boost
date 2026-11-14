@@ -33,7 +33,19 @@ OF SUCH DAMAGE.
 */
 
 #include "gd32f30x_it.h"
+
+#include "controller.h"
+#include "gd32f30x_adc.h"
+#include "gd32f30x_timer.h"
 #include "usart.h"
+
+extern controller_t controller;
+extern usart_handle_t huart;
+
+/* 3.3 V ADC, 20k/1k voltage dividers, INA240A2 gain 50 with 1 mOhm shunts. */
+#define ADC_VOLTS_PER_COUNT (3.3f / 4095.0f)
+#define VOLTAGE_SENSE_GAIN 21.0f
+#define CURRENT_SENSE_A_PER_V 20.0f
 
 /*!
     \brief      this function handles NMI exception
@@ -108,19 +120,18 @@ void DebugMon_Handler(void)
 }
 
 /*!
-    \brief      this function handles the USART0 idle interrupt
+    \brief      this function handles the USART2 interrupt
     \param[in]  none
     \param[out] none
     \retval     none
 */
-void USART0_IRQHandler(void)
+void USART2_IRQHandler(void)
 {
-    usart_rx_idle_irq();
+    usart_irq_handler(&huart);
 }
 
 void DMA0_Channel4_IRQHandler(void)
 {
-    usart_rx_dma_irq();
 }
 
 /*!
@@ -131,5 +142,44 @@ void DMA0_Channel4_IRQHandler(void)
 */
 void DMA0_Channel3_IRQHandler(void)
 {
-    usart_tx_dma_irq();
+}
+
+
+
+void ADC0_1_IRQHandler(void)
+{
+    static uint8_t completed = 0U;
+
+    if (adc_interrupt_flag_get(ADC0, ADC_INT_FLAG_EOIC) == SET) {
+        adc_interrupt_flag_clear(ADC0, ADC_INT_FLAG_EOIC);
+        completed |= 0x01U;
+    }
+    if (adc_interrupt_flag_get(ADC1, ADC_INT_FLAG_EOIC) == SET) {
+        adc_interrupt_flag_clear(ADC1, ADC_INT_FLAG_EOIC);
+        completed |= 0x02U;
+    }
+
+    if (completed == 0x03U) {
+        uint16_t ch1 = (uint16_t)TIMER_CH0CV(TIMER0);
+        uint16_t ch2 = (uint16_t)TIMER_CH1CV(TIMER0);
+        float cur_out;
+        float vol_out;
+        float vol_in;
+        float cur_in;
+
+        completed = 0U;
+        cur_out = (float)adc_inserted_data_read(ADC0, ADC_INSERTED_CHANNEL_0) *
+                  ADC_VOLTS_PER_COUNT * CURRENT_SENSE_A_PER_V;
+        vol_out = (float)adc_inserted_data_read(ADC0, ADC_INSERTED_CHANNEL_1) *
+                  ADC_VOLTS_PER_COUNT * VOLTAGE_SENSE_GAIN;
+        vol_in = (float)adc_inserted_data_read(ADC1, ADC_INSERTED_CHANNEL_0) *
+                 ADC_VOLTS_PER_COUNT * VOLTAGE_SENSE_GAIN;
+        cur_in = (float)adc_inserted_data_read(ADC1, ADC_INSERTED_CHANNEL_1) *
+                 ADC_VOLTS_PER_COUNT * CURRENT_SENSE_A_PER_V;
+
+        set_controller_state(&controller, vol_in, cur_in, vol_out, cur_out);
+        controller_update(&controller, &ch1, &ch2);
+        timer_channel_output_pulse_value_config(TIMER0, TIMER_CH_0, ch1);
+        timer_channel_output_pulse_value_config(TIMER0, TIMER_CH_1, ch2);
+    }
 }

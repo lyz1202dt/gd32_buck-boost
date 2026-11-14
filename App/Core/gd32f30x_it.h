@@ -56,8 +56,10 @@ void DebugMon_Handler(void);
 void PendSV_Handler(void);
 /* this function handles SysTick exception */
 void SysTick_Handler(void);
-/* this function handles the USART0 receive interrupt */
-void USART0_IRQHandler(void);
+/* this function handles the USART2 interrupt */
+void USART2_IRQHandler(void);
+/* this function handles the ADC0 and ADC1 interrupt */
+void ADC0_1_IRQHandler(void);
 void DMA0_Channel4_IRQHandler(void);
 /* this function handles the USART0 transmit DMA interrupt */
 void DMA0_Channel3_IRQHandler(void);
