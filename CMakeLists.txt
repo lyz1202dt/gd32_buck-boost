@@ -21,6 +21,7 @@ set(FREERTOS_HEAP 4 CACHE STRING "")
 
 add_subdirectory(third_party/FreeRTOS-Kernel)
 add_subdirectory(Lib/i2c)
+add_subdirectory(Lib/pid)
 add_subdirectory(Lib/usart)
 add_subdirectory(third_party/HAL_I2C_0.96_OLED_Driver)
 

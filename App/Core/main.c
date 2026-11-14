@@ -9,8 +9,13 @@
 
 
 TaskHandle_t ScreenTaskHandle;
+TaskHandle_t TestTaskHandle;
+
+
 usart_handle_t huart;
 controller_t controller;
+
+static void TestTask(void* param);
 
 void timer_config();
 void adc_config();
@@ -28,10 +33,19 @@ int main(void) {
     uart_config();
     nvic_config();
     xTaskCreate(ScreenTask, "screen", 512, NULL, tskIDLE_PRIORITY + 1U, &ScreenTaskHandle);
+    xTaskCreate(TestTask, "test", 256, NULL, tskIDLE_PRIORITY + 1U, &TestTaskHandle);
 
     //启动调度器
     vTaskStartScheduler();
     while(1);
+}
+
+void TestTask(void* param){
+    (void)param;
+    TickType_t previous_wake_time = xTaskGetTickCount();
+    for(;;){
+        vTaskDelayUntil(&previous_wake_time, pdMS_TO_TICKS(1000U));
+    }
 }
 
 void uart_config(void){
