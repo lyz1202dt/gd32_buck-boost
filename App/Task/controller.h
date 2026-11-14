@@ -29,6 +29,7 @@ typedef struct {
     float cur_in;
     float vol_out;
     float cur_out;
+    bool measurements_initialized;
 
     int ctrl_mode;
     float vol_ref;
@@ -39,7 +40,7 @@ typedef struct {
 void controller_init(controller_t *controller, uint16_t max_pwm_ccr,
                      uint16_t min_higher_ccr_value, uint16_t min_higher_period_cnt);
 
-/* Measurements are in volts and amperes; false latches an invalid-sample fault. */
+/* Measurements are in volts and amperes; subsequent samples use alpha=0.5 filtering. */
 bool set_controller_state(controller_t *controller, float vol_in, float cur_in,
                           float vol_out, float cur_out);
 /* Updates the two PWM compare values. */

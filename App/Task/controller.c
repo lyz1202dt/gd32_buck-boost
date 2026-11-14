@@ -3,6 +3,7 @@
 #define SETUP_OUTPUT_MIN_V 1.0f
 #define MODE_ENTER_MARGIN_V 0.5f
 #define MODE_EXIT_MARGIN_V 0.25f
+#define MEASUREMENT_FILTER_ALPHA 0.5f
 
 void controller_init(controller_t *controller, uint16_t max_pwm_ccr,
                      uint16_t min_higher_ccr_value, uint16_t min_higher_period_cnt)
@@ -19,15 +20,29 @@ void controller_init(controller_t *controller, uint16_t max_pwm_ccr,
     controller->ctrl_mode = 0;
     controller->vol_ref = 0.0f;
     controller->cur_ref = 0.0f;
+    controller->measurements_initialized = false;
 }
 
 bool set_controller_state(controller_t *controller, float vol_in, float cur_in,
                           float vol_out, float cur_out)
 {
-    controller->vol_in = vol_in;
-    controller->cur_in = cur_in;
-    controller->vol_out = vol_out;
-    controller->cur_out = cur_out;
+    if (controller == 0) {
+        return false;
+    }
+
+    if (!controller->measurements_initialized) {
+        controller->vol_in = vol_in;
+        controller->cur_in = cur_in;
+        controller->vol_out = vol_out;
+        controller->cur_out = cur_out;
+        controller->measurements_initialized = true;
+        return true;
+    }
+
+    controller->vol_in += MEASUREMENT_FILTER_ALPHA * (vol_in - controller->vol_in);
+    controller->cur_in += MEASUREMENT_FILTER_ALPHA * (cur_in - controller->cur_in);
+    controller->vol_out += MEASUREMENT_FILTER_ALPHA * (vol_out - controller->vol_out);
+    controller->cur_out += MEASUREMENT_FILTER_ALPHA * (cur_out - controller->cur_out);
     return true;
 }
 

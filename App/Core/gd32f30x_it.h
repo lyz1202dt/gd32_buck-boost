@@ -60,6 +60,7 @@ void SysTick_Handler(void);
 void USART2_IRQHandler(void);
 /* this function handles the ADC0 and ADC1 interrupt */
 void ADC0_1_IRQHandler(void);
+void TIMER0_UP_TIMER9_IRQHandler(void);
 void DMA0_Channel4_IRQHandler(void);
 /* this function handles the USART0 transmit DMA interrupt */
 void DMA0_Channel3_IRQHandler(void);

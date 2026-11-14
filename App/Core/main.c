@@ -64,6 +64,7 @@ void nvic_config(void){
        FreeRTOS syscall priority or below (numerically 5 or higher). */
     nvic_irq_enable(USART2_IRQn, 5, 0);
     nvic_irq_enable(ADC0_1_IRQn, 1, 0);
+    nvic_irq_enable(TIMER0_UP_TIMER9_IRQn, 1, 0);
 }
 
 void gpio_remap(void){
@@ -113,7 +114,8 @@ void timer_config(void)
     timer_initpara.counterdirection  = TIMER_COUNTER_UP;
     timer_initpara.period            = 599;
     timer_initpara.clockdivision     = TIMER_CKDIV_DIV1;
-    timer_initpara.repetitioncounter = 0;
+    /* One control interrupt for every 20 center-aligned update events. */
+    timer_initpara.repetitioncounter = 19;
     timer_init(TIMER0,&timer_initpara);
 
      /* CH1,CH2 and CH3 configuration in PWM mode */
@@ -150,6 +152,8 @@ void timer_config(void)
 
     /* auto-reload preload enable */
     timer_auto_reload_shadow_enable(TIMER0);
+    timer_interrupt_flag_clear(TIMER0, TIMER_INT_FLAG_UP);
+    timer_interrupt_enable(TIMER0, TIMER_INT_UP);
     timer_enable(TIMER0);
 }
 

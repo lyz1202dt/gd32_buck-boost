@@ -160,8 +160,6 @@ void ADC0_1_IRQHandler(void)
     }
 
     if (completed == 0x03U) {
-        uint16_t ch1 = (uint16_t)TIMER_CH0CV(TIMER0);
-        uint16_t ch2 = (uint16_t)TIMER_CH1CV(TIMER0);
         float cur_out;
         float vol_out;
         float vol_in;
@@ -178,6 +176,16 @@ void ADC0_1_IRQHandler(void)
                  ADC_VOLTS_PER_COUNT * CURRENT_SENSE_A_PER_V;
 
         set_controller_state(&controller, vol_in, cur_in, vol_out, cur_out);
+    }
+}
+
+void TIMER0_UP_TIMER9_IRQHandler(void)
+{
+    if (timer_interrupt_flag_get(TIMER0, TIMER_INT_FLAG_UP) == SET) {
+        uint16_t ch1 = (uint16_t)TIMER_CH0CV(TIMER0);
+        uint16_t ch2 = (uint16_t)TIMER_CH1CV(TIMER0);
+
+        timer_interrupt_flag_clear(TIMER0, TIMER_INT_FLAG_UP);
         controller_update(&controller, &ch1, &ch2);
         timer_channel_output_pulse_value_config(TIMER0, TIMER_CH_0, ch1);
         timer_channel_output_pulse_value_config(TIMER0, TIMER_CH_1, ch2);
