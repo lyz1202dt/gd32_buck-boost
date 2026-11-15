@@ -105,21 +105,20 @@ bool controller_update(controller_t* controller, uint16_t* ch1, uint16_t* ch2) {
     if (state == CONTROLLER_STATE_BUCK) {
         *ch1         = controller->max_pwm_higher_ccr_value;
         float output = 0;
-        pid_update(&controller->pid, controller->vol_ref, controller->vol_in, &output);
+        pid_update(&controller->pid, controller->vol_ref, controller->vol_out, &output);
         if (output < 0.0f)
             output = 0.0f;
         *ch2 = (uint16_t)(output * controller->max_pwm_ccr);
     } else if (state == CONTROLLER_STATE_BOOST) {
         *ch2         = controller->max_pwm_higher_ccr_value;
         float output = 0;
-        pid_update(&controller->pid, controller->vol_ref, controller->vol_in, &output);
+        pid_update(&controller->pid, controller->vol_ref, controller->vol_out, &output);
         if (output < 0.0f)
             output = 0.0f;
         *ch1 = (uint16_t)(output * controller->max_pwm_ccr);
     } else if (state == CONTROLLER_STATE_MIXTURE) {
-        float voltage_diff = controller->vol_ref - controller->vol_in;
-        float boost_weight = (voltage_diff + MODE_ENTER_MARGIN_V) /
-                             (2.0f * MODE_ENTER_MARGIN_V);
+        float boost_weight = (controller->vol_ref - controller->vol_in +
+                              MODE_EXIT_MARGIN_V) / (2.0f * MODE_EXIT_MARGIN_V);
         float output = 0.0f;
 
         if (boost_weight < 0.0f)
@@ -127,9 +126,18 @@ bool controller_update(controller_t* controller, uint16_t* ch1, uint16_t* ch2) {
         else if (boost_weight > 1.0f)
             boost_weight = 1.0f;
 
-        pid_update(&controller->pid, controller->vol_ref, controller->vol_out, &output);
+        // Match the pure-mode CCRs at the hysteresis entry points.
+        boost_weight = boost_weight * boost_weight * (3.0f - 2.0f * boost_weight);
+
+        if (!pid_update(&controller->pid, controller->vol_ref, controller->vol_out, &output)) {
+            *ch1 = 0;
+            *ch2 = 0;
+            return false;
+        }
         if (output < 0.0f)
             output = 0.0f;
+        else if (output > 1.0f)
+            output = 1.0f;
 
         float active_ccr = output * controller->max_pwm_ccr;
         float idle_ccr = controller->max_pwm_higher_ccr_value;
