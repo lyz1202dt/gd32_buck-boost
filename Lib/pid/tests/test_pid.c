@@ -76,7 +76,34 @@ int main(void)
     assert(pid_update(&pid, 3.0f, 2.0f, &output));
     expect_near(output, -2.9f);
 
+    config.kp = 0.0f;
+    config.ki = 1.0f;
+    config.kd = 0.0f;
+    config.sample_time = 1.0f;
+    config.output_limit = 0.0f;
+    assert(pid_init(&pid, &config));
+    assert(pid_update_bounded(&pid, 1.0f, 0.0f, 0.0f, 0.3f, 0.0f, &output));
+    expect_near(output, 0.3f);
+    assert(pid_update_bounded(&pid, 1.0f, 0.0f, 0.0f, 0.3f, 0.0f, &output));
+    expect_near(output, 0.3f);
+    expect_near(pid.integral, 0.0f);
+    assert(pid_update_bounded(&pid, 0.0f, 1.0f, 0.0f, 0.3f, 0.0f, &output));
+    expect_near(output, 0.0f);
+    output = 123.0f;
+    assert(!pid_update_bounded(&pid, 1.0f, 0.0f, 0.3f, 0.0f, 0.0f, &output));
+    expect_near(output, 123.0f);
+
+    config.kp = 1.0f;
+    config.ki = 0.0f;
+    assert(pid_init(&pid, &config));
+    assert(pid_update_bounded(&pid, 1.0f, 0.0f, 0.0f, 1.0f, 0.08f, &output));
+    expect_near(output, 0.08f);
+
     config.mode = PID_EXTERNAL_VELOCITY;
+    config.sample_time = 0.1f;
+    config.kp = 2.0f;
+    config.ki = 1.0f;
+    config.kd = 0.5f;
     config.output_limit = 0.0f;
     assert(pid_init(&pid, &config));
     output = 123.0f;

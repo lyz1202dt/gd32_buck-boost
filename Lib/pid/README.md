@@ -8,6 +8,11 @@ history and output without changing configuration.
 - `PID_DERIVATIVE_ON_MEASUREMENT`: `P + I - Kd * measurement_rate`.
 - `PID_INCREMENTAL`: adds changes in the bounded P, I and D terms to the
   previous output; without limits, this gives the usual incremental PID formula.
+  `pid_update_bounded()` uses the reference-style incremental PI formula with
+  actuator limits and a per-update step limit. It stores only the saturated
+  output, so there is no separate integral to wind up. Do not mix it with
+  `pid_update()` on the same instance without resetting the PID. In this path,
+  `i_limit` bounds each integral increment and `integral_limit` is unused.
 - `PID_EXTERNAL_VELOCITY`: `P + I - Kd * estimated_velocity`. Pass the measured
   variable's estimated rate in units per second to `pid_update_with_velocity()`.
 

@@ -46,6 +46,12 @@ void pid_reset(pid_t *pid);
 /* Returns false without changing the instance or output on invalid arguments. */
 /* Use this for all modes except PID_EXTERNAL_VELOCITY. */
 bool pid_update(pid_t *pid, float setpoint, float measurement, float *output);
+/* Incremental mode: u += delta(P) + Ki*error*dt + delta(D), then clamp
+ * to actuator limits. i_limit bounds each integral increment; integral_limit
+ * is unused here because this path has no separate accumulated integral.
+ * step_limit == 0 disables the per-update delta limit. */
+bool pid_update_bounded(pid_t *pid, float setpoint, float measurement,
+                        float lower, float upper, float step_limit, float *output);
 /* Only for PID_EXTERNAL_VELOCITY; velocity is measurement rate in units/second. */
 bool pid_update_with_velocity(pid_t *pid, float setpoint, float measurement,
                               float estimated_velocity, float *output);

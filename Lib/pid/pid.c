@@ -118,6 +118,57 @@ bool pid_update(pid_t *pid, float setpoint, float measurement, float *output)
     return pid_update_internal(pid, setpoint, measurement, 0.0f, false, output);
 }
 
+bool pid_update_bounded(pid_t *pid, float setpoint, float measurement,
+                        float lower, float upper, float step_limit, float *output)
+{
+    if (pid == NULL || output == NULL || pid->config.mode != PID_INCREMENTAL ||
+        !pid_valid_config(&pid->config) || !isfinite(setpoint) || !isfinite(measurement) ||
+        !isfinite(lower) || !isfinite(upper) || lower > upper ||
+        !isfinite(step_limit) || step_limit < 0.0f) {
+        return false;
+    }
+
+    const pid_config_t *config = &pid->config;
+    const float error = setpoint - measurement;
+    const float p_term = pid_clamp(config->kp * error, config->p_limit);
+    const float i_term = pid_clamp(config->ki * error * config->sample_time,
+                                   config->i_limit);
+    float derivative = 0.0f;
+    if (pid->initialized) {
+        derivative = (error - pid->previous_error) / config->sample_time;
+    }
+    const float d_term = pid_clamp(config->kd * derivative, config->d_limit);
+    float delta = (p_term - pid->p_term) + i_term + (d_term - pid->d_term);
+    if (step_limit > 0.0f) {
+        delta = pid_clamp(delta, step_limit);
+    }
+
+    float next_output = pid->output + delta;
+    if (next_output > upper) {
+        next_output = upper;
+    } else if (next_output < lower) {
+        next_output = lower;
+    }
+    next_output = pid_clamp(next_output, config->output_limit);
+    if (!isfinite(p_term) || !isfinite(i_term) ||
+        !isfinite(d_term) || !isfinite(next_output) ||
+        next_output < lower || next_output > upper) {
+        return false;
+    }
+
+    /* The bounded incremental path has no hidden accumulated integral. */
+    pid->integral = 0.0f;
+    pid->previous_error = error;
+    pid->previous_measurement = measurement;
+    pid->p_term = p_term;
+    pid->i_term = i_term;
+    pid->d_term = d_term;
+    pid->output = next_output;
+    pid->initialized = true;
+    *output = next_output;
+    return true;
+}
+
 bool pid_update_with_velocity(pid_t *pid, float setpoint, float measurement,
                               float estimated_velocity, float *output)
 {

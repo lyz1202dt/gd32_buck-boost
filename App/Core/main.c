@@ -25,7 +25,8 @@ void gpio_config();
 void gpio_remap();
 
 int main(void) {
-    controller_init(&controller, 599U, 0U, 0U);
+    /* 587/599 limits either upper switch to about 98% duty. */
+    controller_init(&controller, 599U, 587U, 0U);
     gpio_config();
     gpio_remap();
     adc_config();
@@ -140,11 +141,11 @@ void timer_config(void)
     timer_channel_output_mode_config(TIMER0, TIMER_CH_3, TIMER_OC_MODE_TIMING);
     timer_channel_output_pulse_value_config(TIMER0, TIMER_CH_3, 599);
 
-    timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,150);
+    timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,0);
     timer_channel_output_mode_config(TIMER0,TIMER_CH_0,TIMER_OC_MODE_PWM0);
     timer_channel_output_shadow_config(TIMER0,TIMER_CH_0,TIMER_OC_SHADOW_DISABLE);
 
-    timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,300);
+    timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,0);
     timer_channel_output_mode_config(TIMER0,TIMER_CH_1,TIMER_OC_MODE_PWM0);
     timer_channel_output_shadow_config(TIMER0,TIMER_CH_1,TIMER_OC_SHADOW_DISABLE);
 
