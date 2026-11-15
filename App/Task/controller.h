@@ -1,6 +1,7 @@
 #ifndef APP_CONTROLLER_H
 #define APP_CONTROLLER_H
 
+#include "pid.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -10,7 +11,7 @@ extern "C" {
 
 typedef enum {
     CONTROLLER_STATE_INIT,
-    CONTROLLER_STATE_SETUP,
+    CONTROLLER_STATE_IDLE,
     CONTROLLER_STATE_BUCK,
     CONTROLLER_STATE_BOOST,
     CONTROLLER_STATE_MIXTURE,
@@ -22,8 +23,8 @@ typedef struct {
     controller_state_t state;
     uint32_t error_code;
     uint16_t max_pwm_ccr;
-    uint16_t min_higher_ccr_value;
-    uint16_t min_higher_period_cnt;
+    uint16_t max_pwm_higher_ccr_value;  //单周期最大高边导通占空
+    uint16_t max_higher_period_cnt;     //最大高边导通触发间隔的周期数
 
     float vol_in;
     float cur_in;
@@ -34,6 +35,10 @@ typedef struct {
     int ctrl_mode;
     float vol_ref;
     float cur_ref;
+
+    uint32_t update_cnt;
+
+    pid_t pid;
 } controller_t;
 
 /* Initializes the controller and enters the setup state. */
