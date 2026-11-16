@@ -12,9 +12,10 @@ extern "C" {
 typedef enum {
     CONTROLLER_STATE_INIT,
     CONTROLLER_STATE_IDLE,
-    CONTROLLER_STATE_BUCK,
-    CONTROLLER_STATE_BOOST,
-    CONTROLLER_STATE_MIXTURE,
+    CONTROLLER_STATE_RUN,
+    // CONTROLLER_STATE_BUCK,
+    // CONTROLLER_STATE_BOOST,
+    // CONTROLLER_STATE_MIXTURE,
     CONTROLLER_STATE_ERROR
 } controller_state_t;
 
@@ -38,6 +39,9 @@ typedef struct {
 
     uint32_t update_cnt;
 
+    // pid_t buck_pid;
+    // pid_t boost_pid;
+    // pid_t bb_pid;
     pid_t pid;
 } controller_t;
 
@@ -51,8 +55,6 @@ bool set_controller_state(controller_t *controller, float vol_in, float cur_in,
                           float vol_out, float cur_out);
 /* Updates the two PWM compare values. */
 bool controller_update(controller_t *controller,uint16_t *ch1, uint16_t *ch2);
-
-uint32_t controller_get_error(const controller_t *controller);
 
 #ifdef __cplusplus
 }
