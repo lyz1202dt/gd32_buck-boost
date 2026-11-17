@@ -58,8 +58,8 @@ bool set_controller_state(
         return true;
     }
 
-    controller->vol_in += MEASUREMENT_FILTER_ALPHA * (vol_in - controller->vol_in);
-    controller->cur_in += MEASUREMENT_FILTER_ALPHA * (cur_in - controller->cur_in);
+    controller->vol_in  += MEASUREMENT_FILTER_ALPHA * (vol_in - controller->vol_in);
+    controller->cur_in  += MEASUREMENT_FILTER_ALPHA * (cur_in - controller->cur_in);
     controller->vol_out += MEASUREMENT_FILTER_ALPHA * (vol_out - controller->vol_out);
     controller->cur_out += MEASUREMENT_FILTER_ALPHA * (cur_out - controller->cur_out);
     return true;
@@ -67,9 +67,6 @@ bool set_controller_state(
 
 bool controller_update(controller_t* controller, uint16_t* ch1, uint16_t* ch2) {
     controller->update_cnt++;
-    if (controller->state == CONTROLLER_STATE_ERROR) {
-        return false;
-    }
     if (controller->ctrl_mode == 0) {
         controller->state = CONTROLLER_STATE_IDLE;
         pid_reset(&controller->pid);
@@ -81,26 +78,35 @@ bool controller_update(controller_t* controller, uint16_t* ch1, uint16_t* ch2) {
     controller->state=CONTROLLER_STATE_RUN;
     float output = 0.0f;
     pid_update(&controller->pid, controller->vol_ref, controller->vol_out, &output);
+    //float d1d2_rate=controller->vol_ref/controller->vol_in;  //开关管占空比比值
+    //const float dc=0.5f;    //参考中心量
+    // const float dff=0.5f*(controller->vol_ref-controller->vol_in)/(controller->vol_ref+controller->vol_in);
+    // float d1=dc+dff+output;
+    // float d2=dc-dff-output;
+    // *ch1 = (uint16_t)(d1 * controller->max_pwm_ccr);
+    // *ch2 = (uint16_t)(d2 * controller->max_pwm_ccr);
+    const float max_paw_rate=0.98f;
 
-    float d1d2_rate=controller->vol_ref/controller->vol_in;  //开关管占空比比值
-    const float dc=0.5f;    //参考中心量
-    const float dff=0.5f*(controller->vol_ref-controller->vol_in)/(controller->vol_ref+controller->vol_in);
-    float d1=dc+dff+output;
-    float d2=dc-dff-output;
-    *ch1 = (uint16_t)(d1 * controller->max_pwm_ccr);
-    *ch2 = (uint16_t)(d2 * controller->max_pwm_ccr);
+    //TODO:电压差从-1~1，映射成w
+    float diff_vol=controller->vol_in-controller->vol_out;
+    float t = fminf(fabsf(diff_vol) / CTRL_MODE_DEAD_AREA, 1.0f);
+    float w = t * t * (3.0f - 2.0f * t);
 
+    float a=controller->vol_out/(controller->vol_in+controller->vol_out);
+    float b=controller->vol_in/(controller->vol_in+controller->vol_out);
 
-    
-    // 控制模式划分
-    // if (controller->vol_out > controller->vol_in + CTRL_MODE_DEAD_AREA) {
-    //     controller->state = CONTROLLER_STATE_BOOST;
+    float s_max=1.0f;
+    if(controller->vol_out>controller->vol_in)
+        s_max=max_paw_rate/a;
+    else
+        s_max=max_paw_rate/b;
+    float s=1.0f+w*(s_max-1.0f);
+    float d1ff=s*a+output;
+    float d2ff=s*b-output;
 
-    // } else if (controller->vol_out < controller->vol_in - CTRL_MODE_DEAD_AREA) {
-    //     controller->state = CONTROLLER_STATE_BUCK;
-    // } else {
-    //     controller->state = CONTROLLER_STATE_MIXTURE;
-    // }
+    //TODO:限制数字的范围
 
+    *ch1 = (uint16_t)(d1ff * controller->max_pwm_ccr);
+    *ch2 = (uint16_t)(d2ff * controller->max_pwm_ccr);
     return true;
 }
