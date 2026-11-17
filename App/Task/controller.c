@@ -4,7 +4,7 @@
 
 #define MEASUREMENT_FILTER_ALPHA 0.5f
 
-#define CTRL_MODE_DEAD_AREA 1.0 // 过渡区域电压范围为正负1V
+#define CTRL_MODE_DEAD_AREA 1.0f // Buck 边界为 1V，Boost 边界基于此再偏移 0.1V
 
 void controller_init(
     controller_t* controller, uint16_t max_pwm_ccr, uint16_t max_higher_ccr_value,
@@ -28,8 +28,6 @@ void controller_init(
     controller->measurements_initialized = false;
     controller->update_cnt               = 0U;
 
-    controller->state = CONTROLLER_STATE_IDLE;
-
     /* Voltage error is in V; PI gains convert it to dimensionless duty. */
     pid_config_t config;
     config.d_limit        = 0.0f;
@@ -42,8 +40,10 @@ void controller_init(
     config.sample_time    = 0.0001f;
     config.mode           = PID_POSITIONAL;
     config.output_limit   = 10.0f;
-    pid_init(&controller->pid, &config);
-    pid_reset(&controller->pid);
+    pid_init(&controller->buck_pid, &config);
+    pid_init(&controller->boost_pid, &config);
+    pid_init(&controller->bb1_pid, &config);
+    pid_init(&controller->bb2_pid, &config);
 }
 
 bool set_controller_state(
@@ -66,47 +66,103 @@ bool set_controller_state(
 }
 
 bool controller_update(controller_t* controller, uint16_t* ch1, uint16_t* ch2) {
+    if (controller == 0 || ch1 == 0 || ch2 == 0) {
+        return false;
+    }
+
     controller->update_cnt++;
     if (controller->ctrl_mode == 0) {
         controller->state = CONTROLLER_STATE_IDLE;
-        pid_reset(&controller->pid);
+        pid_reset(&controller->bb1_pid);
+        pid_reset(&controller->bb2_pid);
+        pid_reset(&controller->buck_pid);
+        pid_reset(&controller->boost_pid);
         *ch1 = 0;
         *ch2 = 0;
         return true;
     }
 
-    controller->state=CONTROLLER_STATE_RUN;
-    float output = 0.0f;
-    pid_update(&controller->pid, controller->vol_ref, controller->vol_out, &output);
-    //float d1d2_rate=controller->vol_ref/controller->vol_in;  //开关管占空比比值
-    //const float dc=0.5f;    //参考中心量
-    // const float dff=0.5f*(controller->vol_ref-controller->vol_in)/(controller->vol_ref+controller->vol_in);
-    // float d1=dc+dff+output;
-    // float d2=dc-dff-output;
-    // *ch1 = (uint16_t)(d1 * controller->max_pwm_ccr);
-    // *ch2 = (uint16_t)(d2 * controller->max_pwm_ccr);
-    const float max_paw_rate=0.98f;
+    if (!controller->measurements_initialized ||
+        !isfinite(controller->vol_in) || !isfinite(controller->vol_out) ||
+        !isfinite(controller->vol_ref) || controller->vol_in <= 0.0f ||
+        controller->vol_ref <= 0.0f || controller->max_pwm_ccr == 0U) {
+        controller->state = CONTROLLER_STATE_IDLE;
+        *ch1 = 0U;
+        *ch2 = 0U;
+        return false;
+    }
 
-    //TODO:电压差从-1~1，映射成w
-    float diff_vol=controller->vol_in-controller->vol_out;
-    float t = fminf(fabsf(diff_vol) / CTRL_MODE_DEAD_AREA, 1.0f);
-    float w = t * t * (3.0f - 2.0f * t);
+    const controller_state_t previous_state = controller->state;
+    const float hysteresis = 0.1f;
+    const float voltage_diff = controller->vol_in - controller->vol_out;
+    const float buck_boundary = CTRL_MODE_DEAD_AREA +
+        (controller->state == CONTROLLER_STATE_BUCK ? -hysteresis :
+         controller->state == CONTROLLER_STATE_IDLE ? 0.0f : hysteresis);
+    const float middle_boundary = 0.1f +
+        (controller->state == CONTROLLER_STATE_BUCK ||
+         controller->state == CONTROLLER_STATE_MIXTURE1 ? -hysteresis :
+         controller->state == CONTROLLER_STATE_IDLE ? 0.0f : hysteresis);
+    const float boost_boundary = -CTRL_MODE_DEAD_AREA - 0.1f +
+        (controller->state == CONTROLLER_STATE_BOOST ? hysteresis :
+         controller->state == CONTROLLER_STATE_IDLE ? 0.0f : -hysteresis);
 
-    float a=controller->vol_out/(controller->vol_in+controller->vol_out);
-    float b=controller->vol_in/(controller->vol_in+controller->vol_out);
+    if (voltage_diff >= buck_boundary) {
+        controller->state = CONTROLLER_STATE_BUCK;
+    } else if (voltage_diff >= middle_boundary) {
+        controller->state = CONTROLLER_STATE_MIXTURE1;
+    } else if (voltage_diff >= boost_boundary) {
+        controller->state = CONTROLLER_STATE_MIXTURE2;
+    } else {
+        controller->state = CONTROLLER_STATE_BOOST;
+    }
 
-    float s_max=1.0f;
-    if(controller->vol_out>controller->vol_in)
-        s_max=max_paw_rate/a;
-    else
-        s_max=max_paw_rate/b;
-    float s=1.0f+w*(s_max-1.0f);
-    float d1ff=s*a+output;
-    float d2ff=s*b-output;
+    pid_t* active_pid;
+    if (controller->state == CONTROLLER_STATE_BUCK) {
+        active_pid = &controller->buck_pid;
+    } else if (controller->state == CONTROLLER_STATE_BOOST) {
+        active_pid = &controller->boost_pid;
+    } else if (controller->state == CONTROLLER_STATE_MIXTURE1) {
+        active_pid = &controller->bb1_pid;
+    } else {
+        active_pid = &controller->bb2_pid;
+    }
+    if (controller->state != previous_state) {
+        pid_reset(active_pid);
+    }
 
-    //TODO:限制数字的范围
+    float correction;
+    if (!pid_update(active_pid, controller->vol_ref, controller->vol_out, &correction)) {
+        controller->state = CONTROLLER_STATE_ERROR;
+        *ch1 = 0U;
+        *ch2 = 0U;
+        return false;
+    }
 
-    *ch1 = (uint16_t)(d1ff * controller->max_pwm_ccr);
-    *ch2 = (uint16_t)(d2ff * controller->max_pwm_ccr);
+    const uint16_t max_ccr = controller->max_pwm_higher_ccr_value < controller->max_pwm_ccr ?
+        controller->max_pwm_higher_ccr_value : controller->max_pwm_ccr;
+    const float max_duty = (float)max_ccr / (float)controller->max_pwm_ccr;
+    float duty1;
+    float duty2;
+    if (controller->state == CONTROLLER_STATE_BUCK) {
+        /* Article's 4% boost-side low-side pulse means 96% on CH2 high side. */
+        duty2 = fminf(0.96f, max_duty);
+        duty1 = duty2 * controller->vol_ref / controller->vol_in + correction;
+    } else if (controller->state == CONTROLLER_STATE_BOOST) {
+        duty1 = fminf(0.96f, max_duty);
+        duty2 = duty1 * controller->vol_in / controller->vol_ref - correction;
+    } else if (controller->state == CONTROLLER_STATE_MIXTURE1) {
+        /* Mix-DW: 14% boost low side, with buck high side under PI control. */
+        duty2 = fminf(0.86f, max_duty);
+        duty1 = duty2 * controller->vol_ref / controller->vol_in + correction;
+    } else {
+        /* Mix-UP: buck high side fixed at 85%, boost high side under PI control. */
+        duty1 = fminf(0.85f, max_duty);
+        duty2 = duty1 * controller->vol_in / controller->vol_ref - correction;
+    }
+
+    duty1 = fminf(fmaxf(duty1, 0.0f), max_duty);
+    duty2 = fminf(fmaxf(duty2, 0.0f), max_duty);
+    *ch1 = (uint16_t)(duty1 * (float)controller->max_pwm_ccr);
+    *ch2 = (uint16_t)(duty2 * (float)controller->max_pwm_ccr);
     return true;
 }

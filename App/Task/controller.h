@@ -12,10 +12,10 @@ extern "C" {
 typedef enum {
     CONTROLLER_STATE_INIT,
     CONTROLLER_STATE_IDLE,
-    CONTROLLER_STATE_RUN,
-    // CONTROLLER_STATE_BUCK,
-    // CONTROLLER_STATE_BOOST,
-    // CONTROLLER_STATE_MIXTURE,
+    CONTROLLER_STATE_BUCK,
+    CONTROLLER_STATE_BOOST,
+    CONTROLLER_STATE_MIXTURE1,
+    CONTROLLER_STATE_MIXTURE2,
     CONTROLLER_STATE_ERROR
 } controller_state_t;
 
@@ -39,10 +39,10 @@ typedef struct {
 
     uint32_t update_cnt;
 
-    // pid_t buck_pid;
-    // pid_t boost_pid;
-    // pid_t bb_pid;
-    pid_t pid;
+    pid_t buck_pid;
+    pid_t boost_pid;
+    pid_t bb1_pid;
+    pid_t bb2_pid;
 } controller_t;
 
 /* Initializes an idle controller. max_higher_ccr_value limits both upper switches.
