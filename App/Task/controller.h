@@ -24,8 +24,6 @@ typedef struct {
     controller_state_t state;
     uint32_t error_code;
     uint16_t max_pwm_ccr;
-    uint16_t max_pwm_higher_ccr_value;  /* Maximum high-side compare value for either leg. */
-    uint16_t max_higher_period_cnt;     //最大高边导通触发间隔的周期数
 
     float vol_in;
     float cur_in;
@@ -45,10 +43,8 @@ typedef struct {
     pid_t bb2_pid;
 } controller_t;
 
-/* Initializes an idle controller. max_higher_ccr_value limits both upper switches.
- * CH1 is the input high side; CH2 is the output high side. */
-void controller_init(controller_t *controller, uint16_t max_pwm_ccr,
-                     uint16_t max_higher_ccr_value, uint16_t min_higher_period_cnt);
+/* Initializes an idle controller. CH1 is the input high side; CH2 is the output high side. */
+void controller_init(controller_t *controller, uint16_t max_pwm_ccr);
 
 /* Measurements are in volts and amperes; subsequent samples use alpha=0.5 filtering. */
 bool set_controller_state(controller_t *controller, float vol_in, float cur_in,

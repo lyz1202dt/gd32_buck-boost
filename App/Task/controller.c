@@ -6,9 +6,7 @@
 
 #define CTRL_MODE_DEAD_AREA 1.0f // Buck 边界为 1V，Boost 边界基于此再偏移 0.1V
 
-void controller_init(
-    controller_t* controller, uint16_t max_pwm_ccr, uint16_t max_higher_ccr_value,
-    uint16_t min_higher_period_cnt) {
+void controller_init(controller_t* controller, uint16_t max_pwm_ccr) {
     if (controller == 0) {
         return;
     }
@@ -16,8 +14,6 @@ void controller_init(
     controller->error_code               = 0U;
     controller->state                    = CONTROLLER_STATE_IDLE;
     controller->max_pwm_ccr              = max_pwm_ccr;
-    controller->max_pwm_higher_ccr_value = max_higher_ccr_value;
-    controller->max_higher_period_cnt    = min_higher_period_cnt;
     controller->ctrl_mode                = 0;
     controller->vol_ref                  = 0.0f;
     controller->cur_ref                  = 0.0f;
@@ -124,17 +120,13 @@ bool controller_update(controller_t* controller, uint16_t* ch1, uint16_t* ch2) {
         return false;
     }
 
-    const uint16_t max_ccr = controller->max_pwm_higher_ccr_value < controller->max_pwm_ccr ?
-        controller->max_pwm_higher_ccr_value : controller->max_pwm_ccr;
-    const float max_duty = (float)max_ccr / (float)controller->max_pwm_ccr;
     float duty1;
     float duty2;
     if (controller->state == CONTROLLER_STATE_BUCK) {
-        /* Article's 4% boost-side low-side pulse means 96% on CH2 high side. */
-        duty2 = max_duty;
+        duty2 = 1.0f;
         duty1 = duty2 * controller->vol_ref / controller->vol_in + correction;
     } else if (controller->state == CONTROLLER_STATE_BOOST) {
-        duty1 = max_duty;
+        duty1 = 1.0f;
         duty2 = duty1 * controller->vol_in / controller->vol_ref - correction;
     } else if (controller->state == CONTROLLER_STATE_MIXTURE1) {
         duty2 = 0.8f;
@@ -144,8 +136,8 @@ bool controller_update(controller_t* controller, uint16_t* ch1, uint16_t* ch2) {
         duty2 = duty1 * controller->vol_in / controller->vol_ref - correction;
     }
 
-    duty1 = fminf(fmaxf(duty1, 0.0f), max_duty);
-    duty2 = fminf(fmaxf(duty2, 0.0f), max_duty);
+    duty1 = fminf(fmaxf(duty1, 0.0f), 1.0f);
+    duty2 = fminf(fmaxf(duty2, 0.0f), 1.0f);
     *ch1 = (uint16_t)(duty1 * (float)controller->max_pwm_ccr);
     *ch2 = (uint16_t)(duty2 * (float)controller->max_pwm_ccr);
     return true;

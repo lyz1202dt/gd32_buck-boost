@@ -25,8 +25,7 @@ void gpio_config();
 void gpio_remap();
 
 int main(void) {
-    /* 587/599 limits either upper switch to about 98% duty. */
-    controller_init(&controller, 599U, 587U, 0U);
+    controller_init(&controller, 599U);
     gpio_config();
     gpio_remap();
     adc_config();
@@ -65,7 +64,7 @@ void nvic_config(void){
        FreeRTOS syscall priority or below (numerically 5 or higher). */
     nvic_irq_enable(USART2_IRQn, 5, 0);
     nvic_irq_enable(ADC0_1_IRQn, 1, 0);
-    nvic_irq_enable(TIMER0_UP_TIMER9_IRQn, 1, 0);
+    //nvic_irq_enable(TIMER0_UP_TIMER9_IRQn, 1, 0);
 }
 
 void gpio_remap(void){
@@ -127,6 +126,7 @@ void timer_config(void)
     timer_ocintpara.ocidlestate  = TIMER_OC_IDLE_STATE_LOW;
     timer_ocintpara.ocnidlestate = TIMER_OCN_IDLE_STATE_LOW;
 
+    timer_channel_output_config(TIMER0,TIMER_CH_0,&timer_ocintpara);
     timer_channel_output_config(TIMER0,TIMER_CH_0,&timer_ocintpara);
     timer_channel_output_config(TIMER0,TIMER_CH_1,&timer_ocintpara);
 
