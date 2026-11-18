@@ -1,4 +1,5 @@
 #include "FreeRTOS.h"
+#include "buttons.h"
 #include "controller.h"
 #include "gd32f30x_adc.h"
 #include "gd32f30x_gpio.h"
@@ -9,6 +10,7 @@
 
 
 TaskHandle_t ScreenTaskHandle;
+TaskHandle_t ButtonsTaskHandle;
 TaskHandle_t TestTaskHandle;
 
 
@@ -29,10 +31,17 @@ int main(void) {
     gpio_config();
     gpio_remap();
     adc_config();
+    if (!buttons_init()) {
+        while (1);
+    }
     timer_config();
     uart_config();
     nvic_config();
     xTaskCreate(ScreenTask, "screen", 512, NULL, tskIDLE_PRIORITY + 1U, &ScreenTaskHandle);
+    if (xTaskCreate(ButtonsTask, "buttons", 256, NULL, tskIDLE_PRIORITY + 1U,
+                    &ButtonsTaskHandle) != pdPASS) {
+        while (1);
+    }
     xTaskCreate(TestTask, "test", 256, NULL, tskIDLE_PRIORITY + 1U, &TestTaskHandle);
 
     //启动调度器
