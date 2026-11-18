@@ -66,10 +66,6 @@ bool set_controller_state(
 }
 
 bool controller_update(controller_t* controller, uint16_t* ch1, uint16_t* ch2) {
-    if (controller == 0 || ch1 == 0 || ch2 == 0) {
-        return false;
-    }
-
     controller->update_cnt++;
     if (controller->ctrl_mode == 0) {
         controller->state = CONTROLLER_STATE_IDLE;
@@ -80,16 +76,6 @@ bool controller_update(controller_t* controller, uint16_t* ch1, uint16_t* ch2) {
         *ch1 = 0;
         *ch2 = 0;
         return true;
-    }
-
-    if (!controller->measurements_initialized ||
-        !isfinite(controller->vol_in) || !isfinite(controller->vol_out) ||
-        !isfinite(controller->vol_ref) || controller->vol_in <= 0.0f ||
-        controller->vol_ref <= 0.0f || controller->max_pwm_ccr == 0U) {
-        controller->state = CONTROLLER_STATE_IDLE;
-        *ch1 = 0U;
-        *ch2 = 0U;
-        return false;
     }
 
     const controller_state_t previous_state = controller->state;
@@ -145,18 +131,16 @@ bool controller_update(controller_t* controller, uint16_t* ch1, uint16_t* ch2) {
     float duty2;
     if (controller->state == CONTROLLER_STATE_BUCK) {
         /* Article's 4% boost-side low-side pulse means 96% on CH2 high side. */
-        duty2 = fminf(0.96f, max_duty);
+        duty2 = max_duty;
         duty1 = duty2 * controller->vol_ref / controller->vol_in + correction;
     } else if (controller->state == CONTROLLER_STATE_BOOST) {
-        duty1 = fminf(0.96f, max_duty);
+        duty1 = max_duty;
         duty2 = duty1 * controller->vol_in / controller->vol_ref - correction;
     } else if (controller->state == CONTROLLER_STATE_MIXTURE1) {
-        /* Mix-DW: 14% boost low side, with buck high side under PI control. */
-        duty2 = fminf(0.86f, max_duty);
+        duty2 = 0.8f;
         duty1 = duty2 * controller->vol_ref / controller->vol_in + correction;
     } else {
-        /* Mix-UP: buck high side fixed at 85%, boost high side under PI control. */
-        duty1 = fminf(0.85f, max_duty);
+        duty1 = 0.8f;
         duty2 = duty1 * controller->vol_in / controller->vol_ref - correction;
     }
 
